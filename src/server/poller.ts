@@ -122,62 +122,12 @@ export class GdeltPoller extends EventEmitter {
 }
 
 async function unzipToText(zip: Buffer): Promise<string> {
-  // Inline minimal zip reader for the GDELT export: the zip contains exactly
-  // one .CSV entry, stored (not deflated). Avoids pulling in a zip dependency.
-  const entries = parseZipCentralDirectory(zip);
-  const entry = entries[0];
-  if (!entry) throw new Error("empty zip");
-  return zip.subarray(entry.dataOffset, entry.dataOffset + entry.compressedSize).toString("utf-8");
-}
-
-interface ZipEntry {
-  name: string;
-  dataOffset: number;
-  compressedSize: number;
-}
-
-function parseZipCentralDirectory(buf: Buffer): ZipEntry[] {
-  // Walk back from end of file to find End Of Central Directory (EOCD) record.
-  const eocdSig = 0x06054b50;
-  let eocdPos = -1;
-  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 0xffff); i--) {
-    if (buf.readUInt32LE(i) === eocdSig) {
-      eocdPos = i;
-      break;
-    }
-  }
-  if (eocdPos < 0) throw new Error("zip: EOCD not found");
-
-  const cdSize = buf.readUInt32LE(eocdPos + 12);
-  const cdOffset = buf.readUInt32LE(eocdPos + 16);
-  const cdEnd = cdOffset + cdSize;
-  const entries: ZipEntry[] = [];
-  let p = cdOffset;
-  const fileHeaderSig = 0x02014b50;
-  while (p < cdEnd) {
-    if (buf.readUInt32LE(p) !== fileHeaderSig) break;
-    const compMethod = buf.readUInt16LE(p + 10);
-    const compSize = buf.readUInt32LE(p + 20);
-    const fnameLen = buf.readUInt16LE(p + 28);
-    const extraLen = buf.readUInt16LE(p + 30);
-    const commentLen = buf.readUInt16LE(p + 32);
-    const localHeaderOffset = buf.readUInt32LE(p + 42);
-    const name = buf.subarray(p + 46, p + 46 + fnameLen).toString("utf-8");
-
-    // Walk the local header to find where the file data actually starts:
-    //   sig(4) + ver(2) + flags(2) + method(2) + time(2) + date(2) + crc(4)
-    //   + comp(4) + uncomp(4) + fname(2) + extra(2) = 30 bytes, then data.
-    const lhBase = localHeaderOffset;
-    const lhFnameLen = buf.readUInt16LE(lhBase + 26);
-    const lhExtraLen = buf.readUInt16LE(lhBase + 28);
-    const dataStart = lhBase + 30 + lhFnameLen + lhExtraLen;
-
-    if (compMethod === 0) {
-      entries.push({ name, dataOffset: dataStart, compressedSize: compSize });
-    } else {
-      throw new Error(`zip: unsupported compression method ${compMethod} for ${name}`);
-    }
-    p += 46 + fnameLen + extraLen + commentLen;
-  }
-  return entries;
+  // GDELT exports use deflate compression (zip method 8). We use fflate to
+  // decode the first entry's data — the export zip always contains exactly
+  // one .CSV file.
+  const { unzipSync, strFromU8 } = await import("fflate");
+  const files = unzipSync(new Uint8Array(zip));
+  const names = Object.keys(files);
+  if (names.length === 0) throw new Error("empty zip");
+  return strFromU8(files[names[0]!]!);
 }
