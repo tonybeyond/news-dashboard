@@ -47,20 +47,49 @@ interface ActionGeo {
   url: string;
 }
 
-export function findActionGeo(parts: string[]): ActionGeo | null {
-  // ActionGeo is the last geo block before DATEADDED/SOURCEURL. It is one of
-  // up to three (Actor1Geo, Actor2Geo, ActionGeo) appended to each row; the
-  // block count varies by snapshot, but within a block the relative layout
-  // is stable:
+function findActionGeo(parts: string[], preferredCC?: string): ActionGeo | null {
+  // GDELT rows can have up to three trailing geo blocks: Actor1Geo,
+  // Actor2Geo, and ActionGeo. Each block has the shape:
   //   Type, FullName, CountryCode, ADM1Code, ADM2Code, Lat, Lon[, FeatureID]
-  // with Lat at offset 5 from the block start.
+  // with Lat at offset 5 from the block start and the last block ending
+  // right before DATEADDED + SOURCEURL.
   //
-  // We walk backwards from parts[-1] (the URL) looking for a (lat, lon) pair.
-  // For each candidate, we look 4 fields back for the FullName and 3 fields
-  // back for the CountryCode, then sanity-check that the FullName looks like
-  // a real place. We try a small range of offsets to handle minor schema
-  // drift (e.g. an extra trailing FeatureID on some snapshots).
+  // Strategy:
+  //   1. If a preferred country code is given, scan each candidate block
+  //      and return the first one whose country code matches. This corrects
+  //      for GDELT geocoder quirks where the ActionGeo resolves to the
+  //      wrong country.
+  //   2. Otherwise, return the LAST valid block (the actual ActionGeo).
   const url = parts[parts.length - 1] ?? "";
+
+  // Each block is 7 or 8 fields wide. We try a small range of block widths
+  // to handle both schemas. For each (start) position we look back from
+  // before DATEADDED to find the lat/lon pair.
+  const blocks = extractGeoBlocks(parts);
+  if (blocks.length === 0) return null;
+
+  if (preferredCC) {
+    const want = preferredCC.toUpperCase();
+    const match = blocks.find((b) => b.country.toUpperCase() === want);
+    if (match) return { ...match, url };
+  }
+  return { ...blocks[blocks.length - 1]!, url };
+}
+
+interface GeoBlock {
+  lat: number;
+  lon: number;
+  place: string;
+  country: string;
+}
+
+function extractGeoBlocks(parts: string[]): GeoBlock[] {
+  // Walk backwards from the end of the row. Each block ends with
+  // [Lat, Lon, ...] and starts with a Type field. The Type field is
+  // either a 1-2 digit code (numeric geo type) or a 2-letter abbreviation
+  // for some FeatureID values. We try block widths of 7 and 8 fields.
+  const out: GeoBlock[] = [];
+  const seen = new Set<string>();    // dedupe by "lat,lon" in case of duplicates
 
   for (let i = 3; i < Math.min(parts.length, 14); i++) {
     const idx = -1 - i;            // candidate lat position (negative index)
@@ -73,14 +102,9 @@ export function findActionGeo(parts: string[]): ActionGeo | null {
     const lon = Number(lonRaw);
     if (!Number.isFinite(lon) || lon < -180 || lon > 180) continue;
 
-    // For each candidate lat, the matching ActionGeo block places the
-    // FullName 4 fields back and the Type 5 fields back. The Type field is
-    // a 1..4 digit code; the FullName should be a multi-word, mixed-case
-    // place name. The CountryCode sits 3 fields back.
-    //
-    // We try a small range of "back" values (4..10) to handle schema drift
-    // where the geo block has extra fields or the row has additional
-    // intermediate numeric fields before DATEADDED.
+    // For each candidate lat, the block's FullName sits 4 fields back and
+    // the CountryCode 3 fields back. We try a small range of "back" values
+    // (4..10) to handle schema drift.
     for (let back = 4; back <= 10; back++) {
       const typeRaw = parts.at(idx - back);
       const fullname = parts.at(idx - back + 1);
@@ -89,13 +113,17 @@ export function findActionGeo(parts: string[]): ActionGeo | null {
       if (!/^\d{1,2}$/.test(typeRaw)) continue;        // type must be 1..99 numeric
       if (fullname.length < 3) continue;
       if (!/[A-Za-z]/.test(fullname)) continue;
-      if (fullname === fullname.toUpperCase()) continue;  // skip acronyms
+      if (fullname === fullname.toUpperCase()) continue;
       if (fullname.toLowerCase() === "the") continue;
       const country = (cc && cc.length === 2 && /^[A-Za-z]+$/.test(cc)) ? cc.toUpperCase() : "";
-      return { lat, lon, place: fullname, country, url };
+      const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ lat, lon, place: fullname, country });
+      break;        // found a valid block at this lat position; move on
     }
   }
-  return null;
+  return out;
 }
 
 function num(s: string | undefined, fallback: number): number {
@@ -122,7 +150,18 @@ export function parseExport(raw: string): GdeltEvent[] {
     if (!line) continue;
     const parts = line.split("\t");
     if (parts.length < 61) continue;
-    const geo = findActionGeo(parts);
+
+    // Prefer the geo block whose country code matches one of the actors'
+    // country codes. This guards against GDELT geocoder errors (e.g. "NJ"
+    // being resolved to Jersey, JE rather than New Jersey, US) and also
+    // against the case where Actor1Geo and ActionGeo disagree. When no
+    // actor country code is set, fall back to the last (ActionGeo) block.
+    const actor1cc = (parts[7] ?? "").toUpperCase();
+    const actor2cc = (parts[17] ?? "").toUpperCase();
+    const preferredCC = actor1cc || actor2cc;
+    const geo = preferredCC
+      ? findActionGeo(parts, preferredCC) ?? findActionGeo(parts)
+      : findActionGeo(parts);
     if (!geo) continue;
 
     const root = parts[28] ?? "";

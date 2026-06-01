@@ -59,6 +59,57 @@ aside { background: var(--panel); border-left: 1px solid var(--line);
              border-radius: 3px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
 .reconnect:hover { background: var(--line); }
 
+/* second filter row: country / subject dropdowns + free-text search */
+.filters-row2 { padding-top: 8px; padding-bottom: 8px; gap: 6px; }
+.filter-group { position: relative; display: flex; align-items: center; }
+.filter-group-grow { flex: 1 1 160px; min-width: 120px; }
+
+.dd-button { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+             border-radius: 3px; padding: 4px 8px; font-size: 12px; cursor: pointer;
+             display: inline-flex; align-items: center; gap: 6px; min-width: 92px; }
+.dd-button:hover { background: var(--line); }
+.dd-button[aria-expanded="true"] { background: var(--line); }
+.dd-button .dd-label { color: var(--muted); text-transform: uppercase;
+                       font-size: 10px; letter-spacing: 0.6px; }
+.dd-button .dd-count { color: var(--text); font-variant-numeric: tabular-nums;
+                       font-size: 11px; max-width: 90px; overflow: hidden;
+                       text-overflow: ellipsis; white-space: nowrap; }
+.dd-button .dd-caret { color: var(--muted); font-size: 10px; }
+
+.dd-panel { position: absolute; top: calc(100% + 4px); left: 0;
+            background: var(--panel2); border: 1px solid var(--line); border-radius: 4px;
+            min-width: 240px; max-width: 320px; max-height: 360px;
+            display: flex; flex-direction: column; z-index: 2000;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); }
+.dd-panel[hidden] { display: none; }
+
+.dd-search { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+             border-radius: 3px; padding: 5px 8px; font-size: 12px; margin: 8px 8px 6px;
+             outline: none; }
+.dd-search:focus { border-color: var(--accent); }
+
+.dd-actions { display: flex; gap: 4px; padding: 0 8px 6px; }
+.dd-actions button { background: transparent; color: var(--muted); border: 1px solid var(--line);
+                    border-radius: 3px; padding: 2px 6px; font-size: 10px; cursor: pointer;
+                    text-transform: uppercase; letter-spacing: 0.4px; }
+.dd-actions button:hover { color: var(--text); background: var(--line); }
+
+.dd-list { overflow-y: auto; max-height: 280px; padding: 4px 0; }
+.dd-item { display: flex; align-items: center; gap: 8px; padding: 4px 12px;
+           font-size: 12px; cursor: pointer; user-select: none; }
+.dd-item:hover { background: var(--line); }
+.dd-item input[type=checkbox] { margin: 0; cursor: pointer; }
+.dd-item .dd-item-label { flex: 1; color: var(--text); }
+.dd-item .dd-item-meta { color: var(--muted); font-variant-numeric: tabular-nums;
+                          font-size: 11px; }
+.dd-item.conflict .dd-item-label { font-weight: 600; }
+
+#search-box { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+             border-radius: 3px; padding: 4px 8px; font-size: 12px; width: 100%;
+             outline: none; }
+#search-box:focus { border-color: var(--accent); }
+#search-box::placeholder { color: var(--muted); }
+
 .feed { overflow-y: auto; flex: 1; }
 .event { padding: 10px 12px; border-bottom: 1px solid var(--line);
          cursor: pointer; transition: background 0.1s; }

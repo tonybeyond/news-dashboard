@@ -17,6 +17,7 @@
       <span><span class="k">conflict</span> <b id="s-conflict">—</b></span>
       <span><span class="k">countries</span> <b id="s-countries">—</b></span>
       <span><span class="k">avg tone</span> <b id="s-tone">—</b></span>
+      <span><span class="k">visible</span> <b id="s-visible">—</b></span>
       <span><span class="k">last update</span> <b id="s-ago">—</b></span>
     </div>
   </header>
@@ -29,6 +30,46 @@
         <label>min mentions <span class="val" id="m-val">0</span></label>
         <input type="range" id="m-filter" min="0" max="20" step="1" value="0">
         <button id="reconnect" class="reconnect" title="Reconnect SSE stream">↻</button>
+      </div>
+      <div class="filters filters-row2">
+        <div class="filter-group">
+          <button class="dd-button" id="country-btn" type="button" aria-haspopup="true" aria-expanded="false">
+            <span class="dd-label">country</span>
+            <span class="dd-count" id="country-count"></span>
+            <span class="dd-caret">▾</span>
+          </button>
+          <div class="dd-panel" id="country-panel" hidden>
+            <input type="search" class="dd-search" id="country-search" placeholder="search countries…" autocomplete="off">
+            <div class="dd-actions">
+              <button type="button" data-country-action="all">all</button>
+              <button type="button" data-country-action="none">none</button>
+              <button type="button" data-country-action="top10">top 10</button>
+            </div>
+            <div class="dd-list" id="country-list" role="listbox" aria-multiselectable="true"></div>
+          </div>
+        </div>
+
+        <div class="filter-group">
+          <button class="dd-button" id="root-btn" type="button" aria-haspopup="true" aria-expanded="false">
+            <span class="dd-label">subject</span>
+            <span class="dd-count" id="root-count"></span>
+            <span class="dd-caret">▾</span>
+          </button>
+          <div class="dd-panel" id="root-panel" hidden>
+            <div class="dd-actions">
+              <button type="button" data-root-action="all">all</button>
+              <button type="button" data-root-action="none">none</button>
+              <button type="button" data-root-action="conflict">conflict only</button>
+            </div>
+            <div class="dd-list" id="root-list" role="listbox" aria-multiselectable="true"></div>
+          </div>
+        </div>
+
+        <div class="filter-group filter-group-grow">
+          <input type="search" id="search-box" placeholder="search actor, place, label…" autocomplete="off">
+        </div>
+
+        <button type="button" id="filters-clear" class="reconnect" title="Clear all filters" hidden>clear</button>
       </div>
       <div class="feed" id="feed"></div>
     </aside>

@@ -1,7 +1,9 @@
 // Browser client. Subscribes to the SSE stream and incrementally updates the
 // Leaflet map and event feed. Falls back to a one-shot REST fetch if SSE is
-// unavailable. Renders only the events that pass the current filter sliders
-// (so the dataset can grow without re-rendering the world every tick).
+// unavailable. All filtering happens client-side so the dataset can grow
+// without re-rendering the world on every tick.
+import { countryName } from "./countries.js";
+import { CAMEO_ROOT, CONFLICT_ROOTS } from "./cameo.js";
 // ------- DOM refs -------
 const $ = (id) => {
     const el = document.getElementById(id);
@@ -15,6 +17,7 @@ const els = {
     sConflict: $("s-conflict"),
     sCountries: $("s-countries"),
     sTone: $("s-tone"),
+    sVisible: $("s-visible"),
     sAgo: $("s-ago"),
     liveDot: $("live-dot"),
     liveLabel: $("live-label"),
@@ -24,11 +27,26 @@ const els = {
     gVal: $("g-val"),
     mVal: $("m-val"),
     reconnect: $("reconnect"),
+    // Second filter row
+    countryBtn: $("country-btn"),
+    countryPanel: $("country-panel"),
+    countryList: $("country-list"),
+    countryCount: $("country-count"),
+    countrySearch: $("country-search"),
+    rootBtn: $("root-btn"),
+    rootPanel: $("root-panel"),
+    rootList: $("root-list"),
+    rootCount: $("root-count"),
+    searchBox: $("search-box"),
+    filtersClear: $("filters-clear"),
 };
 const state = {
     events: new Map(),
     meta: null,
     receivedAt: 0,
+    selectedCountries: new Set(),
+    selectedRoots: new Set(),
+    search: "",
 };
 // ------- Map -------
 const map = L.map("map", { worldCopyJump: true, preferCanvas: true }).setView([20, 10], 2);
@@ -37,8 +55,6 @@ L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
     subdomains: "abcd",
     maxZoom: 8,
 }).addTo(map);
-// id -> Leaflet marker. We mutate the layer in place when an event is updated
-// so the same marker can change color/radius as new info arrives.
 const markers = new Map();
 function colorFor(g) {
     if (g <= -6)
@@ -56,7 +72,7 @@ function popupHTML(e) {
       <div style="font-weight:600;margin-bottom:4px">${esc(e.event_label)}</div>
       <div style="color:#7a8893;font-size:11px;margin-bottom:6px">
         ${esc(e.actor1 || "?")} → ${esc(e.actor2 || "?")}<br>
-        ${esc(e.place)}${e.country ? ", " + esc(e.country) : ""}
+        ${esc(e.place)}${e.country ? ", " + esc(countryName(e.country)) : ""}
       </div>
       <div style="font-size:11px">
         Goldstein: <b>${e.goldstein.toFixed(1)}</b> ·
@@ -73,15 +89,43 @@ function esc(s) {
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
 }
-// ------- Filtering / rendering -------
+// ------- Filtering -------
 function currentFilters() {
     return {
         gMax: parseFloat(els.gFilter.value),
         mMin: parseInt(els.mFilter.value, 10),
+        countries: state.selectedCountries, // empty set = pass all
+        roots: state.selectedRoots, // empty set = pass all
+        search: state.search.trim().toLowerCase(),
     };
 }
+function searchHaystack(e) {
+    return `${e.actor1} ${e.actor2} ${e.place} ${e.event_label} ${e.country}`.toLowerCase();
+}
+// Cache the lowercased search haystack per event id. We don't put it on
+// the event object itself because that would dirty the wire format.
+const hayCache = new Map();
+function hayFor(e) {
+    let h = hayCache.get(e.id);
+    if (h === undefined) {
+        h = searchHaystack(e);
+        hayCache.set(e.id, h);
+    }
+    return h;
+}
+function clearHayCache() { hayCache.clear(); }
 function passes(e, f) {
-    return e.goldstein <= f.gMax && e.mentions >= f.mMin;
+    if (e.goldstein > f.gMax)
+        return false;
+    if (e.mentions < f.mMin)
+        return false;
+    if (f.countries.size > 0 && !f.countries.has(e.country))
+        return false;
+    if (f.roots.size > 0 && !f.roots.has(e.event_root))
+        return false;
+    if (f.search.length > 0 && !hayFor(e).includes(f.search))
+        return false;
+    return true;
 }
 function severity(g) {
     return g <= -6 ? "hi" : g <= -4 ? "md" : "lo";
@@ -101,10 +145,18 @@ function eventRowHTML(e) {
       <div class="row3">${url}</div>
     </div>`;
 }
-function renderFeed(newIds) {
+function countVisible() {
     const f = currentFilters();
-    els.gVal.textContent = f.gMax.toFixed(1);
-    els.mVal.textContent = String(f.mMin);
+    let n = 0;
+    for (const e of state.events.values())
+        if (passes(e, f))
+            n++;
+    return n;
+}
+function renderFeed(newIds) {
+    els.gVal.textContent = parseFloat(els.gFilter.value).toFixed(1);
+    els.mVal.textContent = String(parseInt(els.mFilter.value, 10));
+    const f = currentFilters();
     const visible = [...state.events.values()]
         .filter((e) => passes(e, f))
         .sort((a, b) => a.goldstein - b.goldstein || b.mentions - a.mentions)
@@ -114,9 +166,9 @@ function renderFeed(newIds) {
     }
     else {
         els.feed.innerHTML = visible.map(eventRowHTML).join("");
-        // Tag newly-arrived rows for the flash animation
         for (const id of newIds) {
-            if (!passes(state.events.get(id), f))
+            const e = state.events.get(id);
+            if (!e || !passes(e, f))
                 continue;
             const row = els.feed.querySelector(`.event[data-id="${cssEscape(id)}"]`);
             if (row) {
@@ -132,6 +184,11 @@ function renderFeed(newIds) {
                 map.setView([ev.lat, ev.lon], 5, { animate: true });
         });
     });
+    // Update the visible-count stat in the header.
+    els.sVisible.textContent = String(countVisible());
+    // Show / hide the "clear" button.
+    const hasFilter = f.countries.size > 0 || f.roots.size > 0 || f.search.length > 0;
+    els.filtersClear.hidden = !hasFilter;
 }
 function syncMarkers() {
     const f = currentFilters();
@@ -158,7 +215,6 @@ function syncMarkers() {
             markers.set(id, cm);
         }
     }
-    // Remove markers that no longer pass the filter or are gone from the dataset.
     for (const [id, m] of markers) {
         if (!want.has(id)) {
             m.remove();
@@ -168,12 +224,7 @@ function syncMarkers() {
 }
 function renderHeader() {
     const m = state.meta;
-    if (!m) {
-        els.snapshot.textContent = "—";
-    }
-    else {
-        els.snapshot.textContent = `snapshot: ${m.snapshot} · built ${m.built}`;
-    }
+    els.snapshot.textContent = m ? `snapshot: ${m.snapshot} · built ${m.built}` : "—";
     els.sTotal.textContent = m ? String(m.total) : "—";
     els.sConflict.textContent = m ? String(m.conflict) : "—";
     els.sCountries.textContent = m ? String(m.countries) : "—";
@@ -193,10 +244,80 @@ function renderAgo() {
         els.sAgo.textContent = `${Math.floor(sec / 3600)}h ago`;
 }
 setInterval(renderAgo, 1000);
+// ------- Country dropdown -------
+function countryBreakdown() {
+    const m = new Map();
+    for (const e of state.events.values()) {
+        if (!e.country)
+            continue;
+        m.set(e.country, (m.get(e.country) ?? 0) + 1);
+    }
+    return m;
+}
+function rootBreakdown() {
+    const m = new Map();
+    for (const e of state.events.values()) {
+        m.set(e.event_root, (m.get(e.event_root) ?? 0) + 1);
+    }
+    return m;
+}
+let countryListBuilt = null; // memoize: only rebuild when dataset changes
+function renderCountryList() {
+    const counts = countryBreakdown();
+    const entries = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const filter = els.countrySearch.value.trim().toLowerCase();
+    const visible = filter
+        ? entries.filter(([cc]) => countryName(cc).toLowerCase().includes(filter) || cc.toLowerCase().includes(filter))
+        : entries;
+    els.countryList.innerHTML = visible.map(([cc, n]) => {
+        const checked = state.selectedCountries.has(cc) ? "checked" : "";
+        return `
+      <label class="dd-item" data-country-code="${esc(cc)}">
+        <input type="checkbox" data-country-code="${esc(cc)}" ${checked}>
+        <span class="dd-item-label">${esc(countryName(cc))} <span style="color:var(--muted)">${esc(cc)}</span></span>
+        <span class="dd-item-meta">${n}</span>
+      </label>`;
+    }).join("") || '<div class="empty" style="padding:12px">no countries</div>';
+    // Update the count badge on the dropdown button.
+    const total = state.selectedCountries.size;
+    els.countryCount.textContent = total === 0 ? "" : `${total} sel`;
+    countryListBuilt = state.meta?.snapshot ?? "no-snapshot";
+}
+function renderRootList() {
+    const counts = rootBreakdown();
+    const entries = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    els.rootList.innerHTML = entries.map(([code, n]) => {
+        const checked = state.selectedRoots.has(code) ? "checked" : "";
+        const isConflict = CONFLICT_ROOTS.has(code);
+        return `
+      <label class="dd-item ${isConflict ? "conflict" : ""}" data-root-code="${esc(code)}">
+        <input type="checkbox" data-root-code="${esc(code)}" ${checked}>
+        <span class="dd-item-label">${esc(CAMEO_ROOT[code] ?? code)} <span style="color:var(--muted)">${esc(code)}</span></span>
+        <span class="dd-item-meta">${n}</span>
+      </label>`;
+    }).join("") || '<div class="empty" style="padding:12px">no subjects</div>';
+    const total = state.selectedRoots.size;
+    els.rootCount.textContent = total === 0 ? "" : `${total} sel`;
+}
+function openDropdown(panel, btn) {
+    closeAllDropdowns();
+    panel.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+}
+function closeAllDropdowns() {
+    els.countryPanel.hidden = true;
+    els.rootPanel.hidden = true;
+    els.countryBtn.setAttribute("aria-expanded", "false");
+    els.rootBtn.setAttribute("aria-expanded", "false");
+}
+function applyFiltersChanged() {
+    syncMarkers();
+    renderFeed(new Set());
+}
 // ------- Live stream -------
-function setLive(state, label) {
+function setLive(stateName, label) {
     els.liveDot.classList.remove("live", "stale", "down");
-    els.liveDot.classList.add(state);
+    els.liveDot.classList.add(stateName);
     els.liveLabel.textContent = label;
 }
 let es = null;
@@ -204,7 +325,6 @@ function connect() {
     if (es)
         es.close();
     setLive("stale", "connecting…");
-    // Try SSE first
     try {
         es = new EventSource("/api/stream");
     }
@@ -214,10 +334,7 @@ function connect() {
         return;
     }
     es.onopen = () => setLive("live", "live");
-    es.onerror = () => {
-        setLive("down", "reconnecting…");
-        // EventSource auto-reconnects; just reflect state in the UI.
-    };
+    es.onerror = () => setLive("down", "reconnecting…");
     es.onmessage = (ev) => {
         let msg;
         try {
@@ -238,27 +355,23 @@ function handleMessage(msg) {
         return;
     }
     if (msg.type === "delta") {
-        // Replace the snapshot atomically. (GDELT exports are full snapshots,
-        // not append-only — using add vs. replace keeps client logic simple.)
+        // Replace atomically.
         state.events.clear();
-        markers.forEach((m) => m.remove());
-        markers.clear();
-        const newIds = new Set();
-        for (const e of msg.events) {
+        clearHayCache();
+        for (const e of msg.events)
             state.events.set(e.id, e);
-            newIds.add(e.id);
-        }
         state.meta = msg.meta;
         state.receivedAt = Date.now();
         renderHeader();
+        // Rebuild dropdown contents to reflect the new dataset.
+        renderCountryList();
+        renderRootList();
         syncMarkers();
-        renderFeed(newIds);
+        renderFeed(new Set([...state.events.keys()]));
         setLive("live", "live");
     }
 }
 async function bootstrapRest() {
-    // One-shot fetch if SSE is unsupported. The user can still see the latest
-    // snapshot — it just won't auto-update.
     try {
         const res = await fetch("/api/snapshot");
         if (!res.ok)
@@ -266,13 +379,14 @@ async function bootstrapRest() {
         const body = (await res.json());
         if (body.meta && body.events) {
             state.events.clear();
-            markers.forEach((m) => m.remove());
-            markers.clear();
+            clearHayCache();
             for (const e of body.events)
                 state.events.set(e.id, e);
             state.meta = body.meta;
             state.receivedAt = Date.now();
             renderHeader();
+            renderCountryList();
+            renderRootList();
             syncMarkers();
             renderFeed(new Set());
             setLive("stale", "polling only");
@@ -287,15 +401,122 @@ async function bootstrapRest() {
     }
 }
 // ------- Filter wiring -------
-els.gFilter.addEventListener("input", () => {
-    syncMarkers();
-    renderFeed(new Set());
-});
-els.mFilter.addEventListener("input", () => {
-    syncMarkers();
-    renderFeed(new Set());
-});
+els.gFilter.addEventListener("input", applyFiltersChanged);
+els.mFilter.addEventListener("input", applyFiltersChanged);
 els.reconnect.addEventListener("click", connect);
+// Country dropdown
+els.countryBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (els.countryPanel.hidden) {
+        openDropdown(els.countryPanel, els.countryBtn);
+        els.countrySearch.value = "";
+        renderCountryList();
+        queueMicrotask(() => els.countrySearch.focus());
+    }
+    else {
+        closeAllDropdowns();
+    }
+});
+els.countryList.addEventListener("change", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement))
+        return;
+    const cc = t.dataset.countryCode;
+    if (!cc)
+        return;
+    if (t.checked)
+        state.selectedCountries.add(cc);
+    else
+        state.selectedCountries.delete(cc);
+    applyFiltersChanged();
+    els.countryCount.textContent = state.selectedCountries.size === 0 ? "" : `${state.selectedCountries.size} sel`;
+});
+els.countrySearch.addEventListener("input", renderCountryList);
+els.countryPanel.querySelectorAll("[data-country-action]").forEach((b) => {
+    b.addEventListener("click", () => {
+        const action = b.dataset.countryAction;
+        state.selectedCountries.clear();
+        if (action === "top10") {
+            const counts = countryBreakdown();
+            const top10 = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+            for (const [cc] of top10)
+                state.selectedCountries.add(cc);
+        }
+        renderCountryList();
+        applyFiltersChanged();
+    });
+});
+// Root dropdown
+els.rootBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (els.rootPanel.hidden) {
+        openDropdown(els.rootPanel, els.rootBtn);
+        renderRootList();
+    }
+    else {
+        closeAllDropdowns();
+    }
+});
+els.rootList.addEventListener("change", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement))
+        return;
+    const code = t.dataset.rootCode;
+    if (!code)
+        return;
+    if (t.checked)
+        state.selectedRoots.add(code);
+    else
+        state.selectedRoots.delete(code);
+    applyFiltersChanged();
+    els.rootCount.textContent = state.selectedRoots.size === 0 ? "" : `${state.selectedRoots.size} sel`;
+});
+els.rootPanel.querySelectorAll("[data-root-action]").forEach((b) => {
+    b.addEventListener("click", () => {
+        const action = b.dataset.rootAction;
+        state.selectedRoots.clear();
+        if (action === "conflict") {
+            for (const code of CONFLICT_ROOTS)
+                state.selectedRoots.add(code);
+        }
+        renderRootList();
+        applyFiltersChanged();
+    });
+});
+// Search box — debounce 150ms so typing doesn't thrash renderFeed
+let searchTimer = null;
+els.searchBox.addEventListener("input", () => {
+    if (searchTimer !== null)
+        window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => {
+        state.search = els.searchBox.value;
+        applyFiltersChanged();
+    }, 150);
+});
+// Clear all filters
+els.filtersClear.addEventListener("click", () => {
+    state.selectedCountries.clear();
+    state.selectedRoots.clear();
+    state.search = "";
+    els.searchBox.value = "";
+    renderCountryList();
+    renderRootList();
+    applyFiltersChanged();
+});
+// Close any open dropdown when clicking outside
+document.addEventListener("click", (e) => {
+    if (!(e.target instanceof Node))
+        return;
+    if (els.countryPanel.contains(e.target) || els.countryBtn.contains(e.target))
+        return;
+    if (els.rootPanel.contains(e.target) || els.rootBtn.contains(e.target))
+        return;
+    closeAllDropdowns();
+});
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape")
+        closeAllDropdowns();
+});
 // ------- Helpers -------
 function cssEscape(s) {
     if (typeof CSS !== "undefined" && CSS.escape)
@@ -305,4 +526,3 @@ function cssEscape(s) {
 // ------- Boot -------
 connect();
 bootstrapRest();
-export {};

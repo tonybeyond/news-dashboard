@@ -1,9 +1,11 @@
 // Browser client. Subscribes to the SSE stream and incrementally updates the
 // Leaflet map and event feed. Falls back to a one-shot REST fetch if SSE is
-// unavailable. Renders only the events that pass the current filter sliders
-// (so the dataset can grow without re-rendering the world every tick).
+// unavailable. All filtering happens client-side so the dataset can grow
+// without re-rendering the world on every tick.
 
 import type { GdeltEvent, LiveMessage, SnapshotMeta } from "../shared/types.js";
+import { countryName } from "./countries.js";
+import { CAMEO_ROOT, CONFLICT_ROOTS } from "./cameo.js";
 
 declare const L: typeof import("leaflet");
 
@@ -20,6 +22,7 @@ const els = {
   sConflict: $("s-conflict"),
   sCountries: $("s-countries"),
   sTone: $("s-tone"),
+  sVisible: $("s-visible"),
   sAgo: $("s-ago"),
   liveDot: $("live-dot"),
   liveLabel: $("live-label"),
@@ -29,18 +32,37 @@ const els = {
   gVal: $("g-val"),
   mVal: $("m-val"),
   reconnect: $<HTMLButtonElement>("reconnect"),
+  // Second filter row
+  countryBtn: $<HTMLButtonElement>("country-btn"),
+  countryPanel: $("country-panel"),
+  countryList: $("country-list"),
+  countryCount: $("country-count"),
+  countrySearch: $<HTMLInputElement>("country-search"),
+  rootBtn: $<HTMLButtonElement>("root-btn"),
+  rootPanel: $("root-panel"),
+  rootList: $("root-list"),
+  rootCount: $("root-count"),
+  searchBox: $<HTMLInputElement>("search-box"),
+  filtersClear: $<HTMLButtonElement>("filters-clear"),
 };
 
 // ------- App state -------
 interface State {
-  events: Map<string, GdeltEvent>;   // id -> event (latest known)
+  events: Map<string, GdeltEvent>;
   meta: SnapshotMeta | null;
-  receivedAt: number;                // epoch ms of last server message
+  receivedAt: number;
+  // UI filter state — empty set / "" means "no filter"
+  selectedCountries: Set<string>;
+  selectedRoots: Set<string>;
+  search: string;
 }
 const state: State = {
   events: new Map(),
   meta: null,
   receivedAt: 0,
+  selectedCountries: new Set(),
+  selectedRoots: new Set(),
+  search: "",
 };
 
 // ------- Map -------
@@ -51,8 +73,6 @@ L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
   maxZoom: 8,
 }).addTo(map);
 
-// id -> Leaflet marker. We mutate the layer in place when an event is updated
-// so the same marker can change color/radius as new info arrives.
 const markers = new Map<string, L.CircleMarker>();
 
 function colorFor(g: number): string {
@@ -69,7 +89,7 @@ function popupHTML(e: GdeltEvent): string {
       <div style="font-weight:600;margin-bottom:4px">${esc(e.event_label)}</div>
       <div style="color:#7a8893;font-size:11px;margin-bottom:6px">
         ${esc(e.actor1 || "?")} → ${esc(e.actor2 || "?")}<br>
-        ${esc(e.place)}${e.country ? ", " + esc(e.country) : ""}
+        ${esc(e.place)}${e.country ? ", " + esc(countryName(e.country)) : ""}
       </div>
       <div style="font-size:11px">
         Goldstein: <b>${e.goldstein.toFixed(1)}</b> ·
@@ -88,16 +108,41 @@ function esc(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-// ------- Filtering / rendering -------
-function currentFilters(): { gMax: number; mMin: number } {
+// ------- Filtering -------
+function currentFilters() {
   return {
     gMax: parseFloat(els.gFilter.value),
     mMin: parseInt(els.mFilter.value, 10),
+    countries: state.selectedCountries,    // empty set = pass all
+    roots: state.selectedRoots,            // empty set = pass all
+    search: state.search.trim().toLowerCase(),
   };
 }
 
-function passes(e: GdeltEvent, f: { gMax: number; mMin: number }): boolean {
-  return e.goldstein <= f.gMax && e.mentions >= f.mMin;
+function searchHaystack(e: GdeltEvent): string {
+  return `${e.actor1} ${e.actor2} ${e.place} ${e.event_label} ${e.country}`.toLowerCase();
+}
+
+// Cache the lowercased search haystack per event id. We don't put it on
+// the event object itself because that would dirty the wire format.
+const hayCache = new Map<string, string>();
+function hayFor(e: GdeltEvent): string {
+  let h = hayCache.get(e.id);
+  if (h === undefined) {
+    h = searchHaystack(e);
+    hayCache.set(e.id, h);
+  }
+  return h;
+}
+function clearHayCache(): void { hayCache.clear(); }
+
+function passes(e: GdeltEvent, f: ReturnType<typeof currentFilters>): boolean {
+  if (e.goldstein > f.gMax) return false;
+  if (e.mentions < f.mMin) return false;
+  if (f.countries.size > 0 && !f.countries.has(e.country)) return false;
+  if (f.roots.size > 0 && !f.roots.has(e.event_root)) return false;
+  if (f.search.length > 0 && !hayFor(e).includes(f.search)) return false;
+  return true;
 }
 
 function severity(g: number): "hi" | "md" | "lo" {
@@ -120,10 +165,17 @@ function eventRowHTML(e: GdeltEvent): string {
     </div>`;
 }
 
-function renderFeed(newIds: Set<string>): void {
+function countVisible(): number {
   const f = currentFilters();
-  els.gVal.textContent = f.gMax.toFixed(1);
-  els.mVal.textContent = String(f.mMin);
+  let n = 0;
+  for (const e of state.events.values()) if (passes(e, f)) n++;
+  return n;
+}
+
+function renderFeed(newIds: Set<string>): void {
+  els.gVal.textContent = parseFloat(els.gFilter.value).toFixed(1);
+  els.mVal.textContent = String(parseInt(els.mFilter.value, 10));
+  const f = currentFilters();
   const visible = [...state.events.values()]
     .filter((e) => passes(e, f))
     .sort((a, b) => a.goldstein - b.goldstein || b.mentions - a.mentions)
@@ -133,9 +185,9 @@ function renderFeed(newIds: Set<string>): void {
     els.feed.innerHTML = '<div class="empty">no events match the current filters</div>';
   } else {
     els.feed.innerHTML = visible.map(eventRowHTML).join("");
-    // Tag newly-arrived rows for the flash animation
     for (const id of newIds) {
-      if (!passes((state.events.get(id) as GdeltEvent), f)) continue;
+      const e = state.events.get(id);
+      if (!e || !passes(e, f)) continue;
       const row = els.feed.querySelector<HTMLElement>(`.event[data-id="${cssEscape(id)}"]`);
       if (row) {
         row.classList.add("new");
@@ -149,6 +201,12 @@ function renderFeed(newIds: Set<string>): void {
       if (ev) map.setView([ev.lat, ev.lon], 5, { animate: true });
     });
   });
+
+  // Update the visible-count stat in the header.
+  els.sVisible.textContent = String(countVisible());
+  // Show / hide the "clear" button.
+  const hasFilter = f.countries.size > 0 || f.roots.size > 0 || f.search.length > 0;
+  els.filtersClear.hidden = !hasFilter;
 }
 
 function syncMarkers(): void {
@@ -174,7 +232,6 @@ function syncMarkers(): void {
       markers.set(id, cm);
     }
   }
-  // Remove markers that no longer pass the filter or are gone from the dataset.
   for (const [id, m] of markers) {
     if (!want.has(id)) {
       m.remove();
@@ -185,11 +242,7 @@ function syncMarkers(): void {
 
 function renderHeader(): void {
   const m = state.meta;
-  if (!m) {
-    els.snapshot.textContent = "—";
-  } else {
-    els.snapshot.textContent = `snapshot: ${m.snapshot} · built ${m.built}`;
-  }
+  els.snapshot.textContent = m ? `snapshot: ${m.snapshot} · built ${m.built}` : "—";
   els.sTotal.textContent = m ? String(m.total) : "—";
   els.sConflict.textContent = m ? String(m.conflict) : "—";
   els.sCountries.textContent = m ? String(m.countries) : "—";
@@ -197,22 +250,96 @@ function renderHeader(): void {
 }
 
 function renderAgo(): void {
-  if (!state.receivedAt) {
-    els.sAgo.textContent = "—";
-    return;
-  }
+  if (!state.receivedAt) { els.sAgo.textContent = "—"; return; }
   const sec = Math.max(0, Math.floor((Date.now() - state.receivedAt) / 1000));
   if (sec < 60) els.sAgo.textContent = `${sec}s ago`;
   else if (sec < 3600) els.sAgo.textContent = `${Math.floor(sec / 60)}m ago`;
   else els.sAgo.textContent = `${Math.floor(sec / 3600)}h ago`;
 }
-
 setInterval(renderAgo, 1000);
 
+// ------- Country dropdown -------
+function countryBreakdown(): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const e of state.events.values()) {
+    if (!e.country) continue;
+    m.set(e.country, (m.get(e.country) ?? 0) + 1);
+  }
+  return m;
+}
+
+function rootBreakdown(): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const e of state.events.values()) {
+    m.set(e.event_root, (m.get(e.event_root) ?? 0) + 1);
+  }
+  return m;
+}
+
+let countryListBuilt: string | null = null;   // memoize: only rebuild when dataset changes
+
+function renderCountryList(): void {
+  const counts = countryBreakdown();
+  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const filter = els.countrySearch.value.trim().toLowerCase();
+  const visible = filter
+    ? entries.filter(([cc]) => countryName(cc).toLowerCase().includes(filter) || cc.toLowerCase().includes(filter))
+    : entries;
+
+  els.countryList.innerHTML = visible.map(([cc, n]) => {
+    const checked = state.selectedCountries.has(cc) ? "checked" : "";
+    return `
+      <label class="dd-item" data-country-code="${esc(cc)}">
+        <input type="checkbox" data-country-code="${esc(cc)}" ${checked}>
+        <span class="dd-item-label">${esc(countryName(cc))} <span style="color:var(--muted)">${esc(cc)}</span></span>
+        <span class="dd-item-meta">${n}</span>
+      </label>`;
+  }).join("") || '<div class="empty" style="padding:12px">no countries</div>';
+
+  // Update the count badge on the dropdown button.
+  const total = state.selectedCountries.size;
+  els.countryCount.textContent = total === 0 ? "" : `${total} sel`;
+  countryListBuilt = state.meta?.snapshot ?? "no-snapshot";
+}
+
+function renderRootList(): void {
+  const counts = rootBreakdown();
+  const entries = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  els.rootList.innerHTML = entries.map(([code, n]) => {
+    const checked = state.selectedRoots.has(code) ? "checked" : "";
+    const isConflict = CONFLICT_ROOTS.has(code);
+    return `
+      <label class="dd-item ${isConflict ? "conflict" : ""}" data-root-code="${esc(code)}">
+        <input type="checkbox" data-root-code="${esc(code)}" ${checked}>
+        <span class="dd-item-label">${esc(CAMEO_ROOT[code] ?? code)} <span style="color:var(--muted)">${esc(code)}</span></span>
+        <span class="dd-item-meta">${n}</span>
+      </label>`;
+  }).join("") || '<div class="empty" style="padding:12px">no subjects</div>';
+  const total = state.selectedRoots.size;
+  els.rootCount.textContent = total === 0 ? "" : `${total} sel`;
+}
+
+function openDropdown(panel: HTMLElement, btn: HTMLButtonElement): void {
+  closeAllDropdowns();
+  panel.hidden = false;
+  btn.setAttribute("aria-expanded", "true");
+}
+function closeAllDropdowns(): void {
+  els.countryPanel.hidden = true;
+  els.rootPanel.hidden = true;
+  els.countryBtn.setAttribute("aria-expanded", "false");
+  els.rootBtn.setAttribute("aria-expanded", "false");
+}
+
+function applyFiltersChanged(): void {
+  syncMarkers();
+  renderFeed(new Set());
+}
+
 // ------- Live stream -------
-function setLive(state: "live" | "stale" | "down", label: string): void {
+function setLive(stateName: "live" | "stale" | "down", label: string): void {
   els.liveDot.classList.remove("live", "stale", "down");
-  els.liveDot.classList.add(state);
+  els.liveDot.classList.add(stateName);
   els.liveLabel.textContent = label;
 }
 
@@ -220,8 +347,6 @@ let es: EventSource | null = null;
 function connect(): void {
   if (es) es.close();
   setLive("stale", "connecting…");
-
-  // Try SSE first
   try {
     es = new EventSource("/api/stream");
   } catch (err) {
@@ -229,19 +354,11 @@ function connect(): void {
     void bootstrapRest();
     return;
   }
-
   es.onopen = (): void => setLive("live", "live");
-  es.onerror = (): void => {
-    setLive("down", "reconnecting…");
-    // EventSource auto-reconnects; just reflect state in the UI.
-  };
+  es.onerror = (): void => setLive("down", "reconnecting…");
   es.onmessage = (ev: MessageEvent<string>): void => {
     let msg: LiveMessage;
-    try {
-      msg = JSON.parse(ev.data) as LiveMessage;
-    } catch {
-      return;
-    }
+    try { msg = JSON.parse(ev.data) as LiveMessage; } catch { return; }
     handleMessage(msg);
   };
 }
@@ -254,40 +371,36 @@ function handleMessage(msg: LiveMessage): void {
     return;
   }
   if (msg.type === "delta") {
-    // Replace the snapshot atomically. (GDELT exports are full snapshots,
-    // not append-only — using add vs. replace keeps client logic simple.)
+    // Replace atomically.
     state.events.clear();
-    markers.forEach((m) => m.remove());
-    markers.clear();
-    const newIds = new Set<string>();
-    for (const e of msg.events) {
-      state.events.set(e.id, e);
-      newIds.add(e.id);
-    }
+    clearHayCache();
+    for (const e of msg.events) state.events.set(e.id, e);
     state.meta = msg.meta;
     state.receivedAt = Date.now();
     renderHeader();
+    // Rebuild dropdown contents to reflect the new dataset.
+    renderCountryList();
+    renderRootList();
     syncMarkers();
-    renderFeed(newIds);
+    renderFeed(new Set([...state.events.keys()]));
     setLive("live", "live");
   }
 }
 
 async function bootstrapRest(): Promise<void> {
-  // One-shot fetch if SSE is unsupported. The user can still see the latest
-  // snapshot — it just won't auto-update.
   try {
     const res = await fetch("/api/snapshot");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = (await res.json()) as { meta: SnapshotMeta | null; events: GdeltEvent[] };
     if (body.meta && body.events) {
       state.events.clear();
-      markers.forEach((m) => m.remove());
-      markers.clear();
+      clearHayCache();
       for (const e of body.events) state.events.set(e.id, e);
       state.meta = body.meta;
       state.receivedAt = Date.now();
       renderHeader();
+      renderCountryList();
+      renderRootList();
       syncMarkers();
       renderFeed(new Set());
       setLive("stale", "polling only");
@@ -301,15 +414,110 @@ async function bootstrapRest(): Promise<void> {
 }
 
 // ------- Filter wiring -------
-els.gFilter.addEventListener("input", () => {
-  syncMarkers();
-  renderFeed(new Set());
-});
-els.mFilter.addEventListener("input", () => {
-  syncMarkers();
-  renderFeed(new Set());
-});
+els.gFilter.addEventListener("input", applyFiltersChanged);
+els.mFilter.addEventListener("input", applyFiltersChanged);
 els.reconnect.addEventListener("click", connect);
+
+// Country dropdown
+els.countryBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (els.countryPanel.hidden) {
+    openDropdown(els.countryPanel, els.countryBtn);
+    els.countrySearch.value = "";
+    renderCountryList();
+    queueMicrotask(() => els.countrySearch.focus());
+  } else {
+    closeAllDropdowns();
+  }
+});
+els.countryList.addEventListener("change", (e) => {
+  const t = e.target;
+  if (!(t instanceof HTMLInputElement)) return;
+  const cc = t.dataset.countryCode;
+  if (!cc) return;
+  if (t.checked) state.selectedCountries.add(cc);
+  else state.selectedCountries.delete(cc);
+  applyFiltersChanged();
+  els.countryCount.textContent = state.selectedCountries.size === 0 ? "" : `${state.selectedCountries.size} sel`;
+});
+els.countrySearch.addEventListener("input", renderCountryList);
+els.countryPanel.querySelectorAll<HTMLButtonElement>("[data-country-action]").forEach((b) => {
+  b.addEventListener("click", () => {
+    const action = b.dataset.countryAction;
+    state.selectedCountries.clear();
+    if (action === "top10") {
+      const counts = countryBreakdown();
+      const top10 = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+      for (const [cc] of top10) state.selectedCountries.add(cc);
+    }
+    renderCountryList();
+    applyFiltersChanged();
+  });
+});
+
+// Root dropdown
+els.rootBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (els.rootPanel.hidden) {
+    openDropdown(els.rootPanel, els.rootBtn);
+    renderRootList();
+  } else {
+    closeAllDropdowns();
+  }
+});
+els.rootList.addEventListener("change", (e) => {
+  const t = e.target;
+  if (!(t instanceof HTMLInputElement)) return;
+  const code = t.dataset.rootCode;
+  if (!code) return;
+  if (t.checked) state.selectedRoots.add(code);
+  else state.selectedRoots.delete(code);
+  applyFiltersChanged();
+  els.rootCount.textContent = state.selectedRoots.size === 0 ? "" : `${state.selectedRoots.size} sel`;
+});
+els.rootPanel.querySelectorAll<HTMLButtonElement>("[data-root-action]").forEach((b) => {
+  b.addEventListener("click", () => {
+    const action = b.dataset.rootAction;
+    state.selectedRoots.clear();
+    if (action === "conflict") {
+      for (const code of CONFLICT_ROOTS) state.selectedRoots.add(code);
+    }
+    renderRootList();
+    applyFiltersChanged();
+  });
+});
+
+// Search box — debounce 150ms so typing doesn't thrash renderFeed
+let searchTimer: number | null = null;
+els.searchBox.addEventListener("input", () => {
+  if (searchTimer !== null) window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(() => {
+    state.search = els.searchBox.value;
+    applyFiltersChanged();
+  }, 150);
+});
+
+// Clear all filters
+els.filtersClear.addEventListener("click", () => {
+  state.selectedCountries.clear();
+  state.selectedRoots.clear();
+  state.search = "";
+  els.searchBox.value = "";
+  renderCountryList();
+  renderRootList();
+  applyFiltersChanged();
+});
+
+// Close any open dropdown when clicking outside
+document.addEventListener("click", (e) => {
+  if (!(e.target instanceof Node)) return;
+  if (els.countryPanel.contains(e.target) || els.countryBtn.contains(e.target)) return;
+  if (els.rootPanel.contains(e.target) || els.rootBtn.contains(e.target)) return;
+  closeAllDropdowns();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeAllDropdowns();
+});
 
 // ------- Helpers -------
 function cssEscape(s: string): string {
