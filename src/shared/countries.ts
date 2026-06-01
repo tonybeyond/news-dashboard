@@ -20,6 +20,7 @@ const GDELT_TO_ISO: Record<string, string> = {
   SP: "ES",   // Spain (FIPS SP → ISO ES)
   TU: "TR",   // Turkey (FIPS TU → ISO TR)
   SU: "SD",   // Sudan (FIPS SU → ISO SD)
+  LE: "LB",   // Lebanon (FIPS LE → ISO LB)
   BM: "MM",   // Myanmar (FIPS BM → ISO MM)
   CB: "KH",   // Cambodia (FIPS CB → ISO KH)
   RP: "PH",   // Philippines (FIPS RP → ISO PH)
@@ -27,6 +28,7 @@ const GDELT_TO_ISO: Record<string, string> = {
   RS: "RU",   // Russia (FIPS RS → ISO RU)
   UP: "UA",   // Ukraine (FIPS UP → ISO UA)
   NS: "SR",   // Suriname (FIPS NS → ISO SR)
+  MI: "MW",   // Malawi (FIPS MI → ISO MW)
   // GDELT-only codes
   UK: "GB",   // United Kingdom (ISO uses GB; GDELT uses UK)
   WE: "PS",   // West Bank (GDELT; ISO uses PS for Palestine)
