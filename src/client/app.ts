@@ -84,16 +84,27 @@ function radiusFor(e: GdeltEvent): number {
   return Math.max(3, Math.min(14, 3 + Math.log2(1 + e.mentions) * 1.5));
 }
 function popupHTML(e: GdeltEvent): string {
+  // Color tone by sentiment: red for negative, green for positive. The
+  // threshold matches GDELT's convention (tone < 0 is negative coverage,
+  // > 0 is positive). Goldstein is already colored by the marker so we
+  // leave it neutral here.
+  const toneColor = e.tone < -2 ? "var(--accent)"
+                   : e.tone >  2 ? "var(--good)"
+                   : "var(--muted)";
   return `
-    <div style="min-width:220px">
+    <div style="min-width:240px">
       <div style="font-weight:600;margin-bottom:4px">${esc(e.event_label)}</div>
-      <div style="color:#7a8893;font-size:11px;margin-bottom:6px">
+      <div style="color:#7a8893;font-size:11px;margin-bottom:8px">
         ${esc(e.actor1 || "?")} → ${esc(e.actor2 || "?")}<br>
         ${esc(e.place)}${e.country ? ", " + esc(countryName(e.country)) : ""}
       </div>
-      <div style="font-size:11px">
-        Goldstein: <b>${e.goldstein.toFixed(1)}</b> ·
-        tone: <b>${e.tone.toFixed(1)}</b> · mentions: <b>${e.mentions}</b>
+      <div style="font-size:11px;line-height:1.5">
+        <div><span title="Goldstein scale: -10 (most conflict) to +10 (most cooperation). Drives the marker color.">conflict:</span>
+          <b style="color:${colorFor(e.goldstein)}">${e.goldstein.toFixed(1)}</b></div>
+        <div><span title="Average tone of the source articles: &lt; 0 negative, &gt; 0 positive framing.">tone:</span>
+          <b style="color:${toneColor}">${e.tone >= 0 ? "+" : ""}${e.tone.toFixed(1)}</b></div>
+        <div><span title="Number of source articles mentioning this event.">mentions:</span>
+          <b>${e.mentions}</b></div>
       </div>
       ${e.url ? `<div style="margin-top:6px"><a href="${esc(e.url)}" target="_blank" rel="noopener">source ↗</a></div>` : ""}
     </div>`;
@@ -154,6 +165,9 @@ function eventRowHTML(e: GdeltEvent): string {
   const url = e.url
     ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.url.replace(/^https?:\/\//, "").slice(0, 60))}…</a>`
     : "";
+  // Tone-colored chip: red < 0, grey ≈ 0, green > 0. Distinct from the
+  // goldstein severity chip so the two metrics never get conflated.
+  const toneCls = e.tone < -2 ? "tone-neg" : e.tone > 2 ? "tone-pos" : "tone-neu";
   return `
     <div class="event" data-id="${esc(e.id)}">
       <div class="row1">
@@ -161,7 +175,11 @@ function eventRowHTML(e: GdeltEvent): string {
         <span class="gscore ${sev}">${e.goldstein.toFixed(1)}</span>
       </div>
       <div class="row2">${esc(e.actor1 || "?")}${e.actor2 ? " → " + esc(e.actor2) : ""} · ${esc(e.place || "")}</div>
-      <div class="row3">${url}</div>
+      <div class="row3">
+        <span class="gscore ${toneCls}" title="article tone">${e.tone >= 0 ? "+" : ""}${e.tone.toFixed(1)}</span>
+        <span class="mentions">${e.mentions} mention${e.mentions === 1 ? "" : "s"}</span>
+        ${url}
+      </div>
     </div>`;
 }
 

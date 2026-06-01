@@ -75,9 +75,15 @@
     </aside>
   </main>
   <div class="legend">
-    <div><span class="dot dot-hi"></span>high intensity (≤ -6)</div>
-    <div><span class="dot dot-md"></span>medium (-6 to -4)</div>
-    <div><span class="dot dot-lo"></span>low (-4 to threshold)</div>
+    <div class="legend-marker">
+      <div><span class="dot dot-hi"></span>high conflict (≤ -6)</div>
+      <div><span class="dot dot-md"></span>medium (-6 to -4)</div>
+      <div><span class="dot dot-lo"></span>low (-4 to threshold)</div>
+    </div>
+    <div class="legend-glossary">
+      <div><b>conflict</b> · Goldstein scale, drives the marker color (-10 = most violent, +10 = most cooperative)</div>
+      <div><b>tone</b> · average sentiment of the source articles (red &lt; 0, grey ≈ 0, green &gt; 0); can move independently of conflict</div>
+    </div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
