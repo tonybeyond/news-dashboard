@@ -1,8 +1,9 @@
-// GDELT 2.0 export parser. Port of build_dashboard.py: same column semantics,
+// GDELT 2.0 row layout. Port of build_dashboard.py: same column semantics,
 // same geo block discovery (scan backwards from DATEADDED/SOURCEURL for a valid
 // lat/lon pair inside a 9-field ActionGeo block). Pure, no I/O.
 
 import { GdeltEvent, QuadClass } from "../shared/types.js";
+import { countryCentroid, isSuspiciouslyZero } from "./centroids.js";
 
 // Subset of CAMEO root codes — same subset the Python build used, focused on
 // the conflict/protest side. The dashboard surfaces anything with quad in
@@ -164,6 +165,26 @@ export function parseExport(raw: string): GdeltEvent[] {
       : findActionGeo(parts);
     if (!geo) continue;
 
+    // Detect a GDELT geocoder failure: lat=0 with a lon that doesn't match
+    // the row's country. GDELT's geocoder often returns lat=0 (equator) with
+    // an unrelated lon when it can't resolve a place, which drops US events
+    // into Africa, etc. If we have a country code, fall back to that
+    // country's centroid so the event lands in the right hemisphere.
+    let lat = geo.lat;
+    let lon = geo.lon;
+    if (isSuspiciouslyZero(lat, lon)) {
+      // Pick a country to fall back to. Prefer the actor's country code if
+      // we have one, otherwise the geo block's country, otherwise drop.
+      const fallbackCC = preferredCC || geo.country;
+      if (fallbackCC) {
+        const c = countryCentroid(fallbackCC);
+        if (c) { lat = c[0]; lon = c[1]; }
+        else continue;
+      } else {
+        continue;
+      }
+    }
+
     const root = parts[28] ?? "";
     const sqldate = parts[1] ?? "";
     const quad = int(parts[29], 0) as QuadClass;
@@ -187,8 +208,8 @@ export function parseExport(raw: string): GdeltEvent[] {
       mentions: int(parts[31], 0),
       sources: int(parts[32], 0),
       articles: int(parts[33], 0),
-      lat: geo.lat,
-      lon: geo.lon,
+      lat,
+      lon,
       place: geo.place,
       country: geo.country,
       url: geo.url,

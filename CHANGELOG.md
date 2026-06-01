@@ -16,6 +16,10 @@ adheres to [Semantic Versioning](https://semver.org/).
   trailing geo blocks (Actor1, Actor2, Action).
 - Multi-stage Alpine Dockerfile (non-root runtime, healthcheck).
 - `docker-compose.yml` mapping host `:22332` → container `:8000`.
+- Country, subject (CAMEO root), and free-text filters in the client.
+- Geocoder-failure fallback: when GDELT returns `lat=0` (a signature of
+  its geocoder falling back to the equator), substitute the country's
+  centroid so events appear in the right hemisphere.
 
 ### Changed
 - Parser ported from Python (`build_dashboard.py`) to TypeScript.
