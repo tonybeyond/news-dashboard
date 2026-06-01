@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.*
+data/*.json
+!data/.gitkeep
+
+# Build outputs that shouldn't be committed
+src/shared/*.js
+
+# Local GDELT export fixtures (large, dev-only)
+/*.export.CSV
+/*.gkg.csv.zip
+test_gkg.zip

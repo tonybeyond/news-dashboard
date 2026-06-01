@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>GDELT Geopolitical Dashboard · Live</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <h1>🌍 GDELT Geopolitical Dashboard <span class="live-dot" id="live-dot"></span> <span class="live-label" id="live-label">connecting…</span></h1>
+    <span class="meta" id="snapshot">—</span>
+    <div class="stats">
+      <span><span class="k">events</span> <b id="s-total">—</b></span>
+      <span><span class="k">conflict</span> <b id="s-conflict">—</b></span>
+      <span><span class="k">countries</span> <b id="s-countries">—</b></span>
+      <span><span class="k">avg tone</span> <b id="s-tone">—</b></span>
+      <span><span class="k">last update</span> <b id="s-ago">—</b></span>
+    </div>
+  </header>
+  <main>
+    <div id="map"></div>
+    <aside>
+      <div class="filters">
+        <label>intensity ≤ <span class="val" id="g-val">-3.0</span></label>
+        <input type="range" id="g-filter" min="-10" max="0" step="0.5" value="-3">
+        <label>min mentions <span class="val" id="m-val">0</span></label>
+        <input type="range" id="m-filter" min="0" max="20" step="1" value="0">
+        <button id="reconnect" class="reconnect" title="Reconnect SSE stream">↻</button>
+      </div>
+      <div class="feed" id="feed"></div>
+    </aside>
+  </main>
+  <div class="legend">
+    <div><span class="dot dot-hi"></span>high intensity (≤ -6)</div>
+    <div><span class="dot dot-md"></span>medium (-6 to -4)</div>
+    <div><span class="dot dot-lo"></span>low (-4 to threshold)</div>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

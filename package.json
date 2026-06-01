@@ -1,0 +1,29 @@
+{
+  "name": "gdelt-live-dashboard",
+  "version": "0.2.0",
+  "description": "Live GDELT 2.0 geopolitical dashboard — Node/TS server with SSE stream + Leaflet client, runs in Docker on Komodo.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:client": "tsc -p tsconfig.client.json && node scripts/copy-client-assets.mjs",
+    "start": "node dist/index.js",
+    "dev": "npm run build && npm start",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fastify/cors": "9.0.1",
+    "@fastify/static": "7.0.4",
+    "fastify": "4.28.1",
+    "undici": "6.19.8"
+  },
+  "devDependencies": {
+    "@types/leaflet": "1.9.12",
+    "@types/node": "20.14.10",
+    "typescript": "5.5.3"
+  }
+}

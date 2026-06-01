@@ -1,0 +1,35 @@
+# Komodo / docker-compose deployment. Maps the container's :8000 to the
+# host's :22332 (your public-facing port). Restart policy is `unless-stopped`
+# so a host reboot brings the dashboard back automatically.
+#
+# Optional: set GDELT_FETCH_TIMEOUT_MS if you want to tune the fetch window
+# (default 60s) and POLL_INTERVAL_MS to change how often lastupdate.txt is
+# checked (default 60s). These are wired through env below.
+
+services:
+  gdelt-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gdelt-live-dashboard:0.2.0
+    container_name: gdelt-dashboard
+    restart: unless-stopped
+    ports:
+      - "22332:8000"
+    environment:
+      NODE_ENV: production
+      PORT: 8000
+      HOST: 0.0.0.0
+      LOG_LEVEL: info
+      # TZ: UTC           # uncomment to force UTC log timestamps
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    # No volumes: the container is fully self-contained. GDELT snapshots are
+    # fetched on demand; nothing is persisted to disk in normal operation.
+    # Uncomment to keep a copy of the most recent snapshot for debugging:
+    # volumes:
+    #   - ./data:/app/data

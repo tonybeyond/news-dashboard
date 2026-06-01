@@ -1,0 +1,26 @@
+# Node / build artifacts
+node_modules/
+dist/
+*.log
+npm-debug.log*
+yarn-error.log
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local data
+data/*.json
+!data/.gitkeep
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Test
+coverage/
+.nyc_output/

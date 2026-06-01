@@ -1,0 +1,11 @@
+# Local dev convenience: run with the local Node toolchain.
+#   npm install
+#   npm run build
+#   npm start
+FROM node:20-alpine
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install --no-audit --no-fund
+COPY . .
+EXPOSE 8000
+CMD ["npm", "run", "dev"]
