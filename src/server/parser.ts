@@ -4,6 +4,7 @@
 
 import { GdeltEvent, QuadClass } from "../shared/types.js";
 import { countryCentroid, isSuspiciouslyZero } from "./centroids.js";
+import { normalizeCountry } from "../shared/countries.js";
 
 // Subset of CAMEO root codes — same subset the Python build used, focused on
 // the conflict/protest side. The dashboard surfaces anything with quad in
@@ -63,14 +64,14 @@ function findActionGeo(parts: string[], preferredCC?: string): ActionGeo | null 
   //   2. Otherwise, return the LAST valid block (the actual ActionGeo).
   const url = parts[parts.length - 1] ?? "";
 
-  // Each block is 7 or 8 fields wide. We try a small range of block widths
-  // to handle both schemas. For each (start) position we look back from
-  // before DATEADDED to find the lat/lon pair.
   const blocks = extractGeoBlocks(parts);
   if (blocks.length === 0) return null;
 
   if (preferredCC) {
-    const want = preferredCC.toUpperCase();
+    // Normalize the preference to ISO so it matches the normalized block
+    // country codes (the GeoBlock.country field is already in ISO form,
+    // but the block's raw cc is whatever GDELT returned).
+    const want = normalizeCountry(preferredCC).toUpperCase();
     const match = blocks.find((b) => b.country.toUpperCase() === want);
     if (match) return { ...match, url };
   }
@@ -116,7 +117,9 @@ function extractGeoBlocks(parts: string[]): GeoBlock[] {
       if (!/[A-Za-z]/.test(fullname)) continue;
       if (fullname === fullname.toUpperCase()) continue;
       if (fullname.toLowerCase() === "the") continue;
-      const country = (cc && cc.length === 2 && /^[A-Za-z]+$/.test(cc)) ? cc.toUpperCase() : "";
+      const country = (cc && cc.length === 2 && /^[A-Za-z]+$/.test(cc))
+        ? normalizeCountry(cc).toUpperCase()
+        : "";
       const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -157,8 +160,11 @@ export function parseExport(raw: string): GdeltEvent[] {
     // being resolved to Jersey, JE rather than New Jersey, US) and also
     // against the case where Actor1Geo and ActionGeo disagree. When no
     // actor country code is set, fall back to the last (ActionGeo) block.
-    const actor1cc = (parts[7] ?? "").toUpperCase();
-    const actor2cc = (parts[17] ?? "").toUpperCase();
+    //
+    // GDELT uses a mix of FIPS 10-4 and ISO 3166-1; normalize before
+    // comparing so a GDELT "IS" (Israel) and a normalized "IL" line up.
+    const actor1cc = normalizeCountry(parts[7] ?? "");
+    const actor2cc = normalizeCountry(parts[17] ?? "");
     const preferredCC = actor1cc || actor2cc;
     const geo = preferredCC
       ? findActionGeo(parts, preferredCC) ?? findActionGeo(parts)
@@ -174,8 +180,10 @@ export function parseExport(raw: string): GdeltEvent[] {
     let lon = geo.lon;
     if (isSuspiciouslyZero(lat, lon)) {
       // Pick a country to fall back to. Prefer the actor's country code if
-      // we have one, otherwise the geo block's country, otherwise drop.
-      const fallbackCC = preferredCC || geo.country;
+      // we have one, otherwise the geo block's country (already normalized
+      // by findActionGeo / extractGeoBlocks — see that file's note), otherwise
+      // drop.
+      const fallbackCC = preferredCC || normalizeCountry(geo.country);
       if (fallbackCC) {
         const c = countryCentroid(fallbackCC);
         if (c) { lat = c[0]; lon = c[1]; }
@@ -194,9 +202,11 @@ export function parseExport(raw: string): GdeltEvent[] {
       date: dateFmt(sqldate),
       added: parts[parts.length - 2] ?? "",
       actor1: parts[6] ?? "",
-      actor1cc: parts[7] ?? "",
+      // Normalize FIPS 10-4 / GDELT codes to ISO 3166-1 alpha-2 for the
+      // actor country codes too, so the UI can look them up by ISO.
+      actor1cc: normalizeCountry(parts[7] ?? ""),
       actor2: parts[16] ?? "",
-      actor2cc: parts[17] ?? "",
+      actor2cc: normalizeCountry(parts[17] ?? ""),
       event_code: parts[26] ?? "",
       event_base: parts[27] ?? "",
       event_root: root,
@@ -211,7 +221,10 @@ export function parseExport(raw: string): GdeltEvent[] {
       lat,
       lon,
       place: geo.place,
-      country: geo.country,
+      // GDELT uses a mix of FIPS 10-4 and ISO 3166-1 codes. Normalize to
+      // ISO so the client, the centroid lookup, and the country dropdown
+      // all see the same set of keys.
+      country: normalizeCountry(geo.country),
       url: geo.url,
     });
   }
